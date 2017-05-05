@@ -79,12 +79,15 @@ static inline TranslationBlock *tb_find(CPUState* env, target_ulong pc)
  */
 const int sz = sizeof(target_ulong);
 const int SIZE = 50;
-shadow_pair* shadow_hash_list, *curr_shadow, *shadow_end;
+target_ulong *eip_list, *eip_end, *curr_eip;
+unsigned long *slot_list, *slot_end, *curr_slot;
 
 static inline void shack_init(CPUState *env)
 {
-    shadow_hash_list = (shadow_pair *)malloc(SIZE * sizeof(shadow_pair));
-    curr_shadow = shadow_end = shadow_hash_list + SIZE;
+    eip_list = (target_ulong *)malloc(SIZE * sizeof(shadow_pair));
+    curr_eip = eip_end = eip_list + SIZE;
+    slot_list = (unsigned long*)curr_eip;
+    curr_slot = slot_end = slot_list + SIZE;
     env->shack = (uint64_t *)malloc(SHACK_SIZE * sizeof(uint64_t));
     env->shack_end = env->shack_top = env->shack;
 }
@@ -95,14 +98,17 @@ static inline void shack_init(CPUState *env)
  */
  void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
 {
-    shadow_pair *p = curr_shadow;
-    while (++p < shadow_end) {
-        if (p->guest_eip == guest_eip) {
-            *p->shadow_slot = (uintptr_t)host_eip;
-            curr_shadow++;
-            const int off = (p - curr_shadow) * sizeof(shadow_pair);
-            if (off)
-                memmove(curr_shadow, curr_shadow + 1, off);
+    target_ulong *p = curr_eip;
+    while (++p < eip_end) {
+        if (*p == guest_eip) {
+            int id = p - curr_eip;
+            curr_slot[id] = (uintptr_t)host_eip;
+            ++curr_slot;
+            ++curr_eip;
+            if (id > 1) {
+                memmove(curr_slot + 1, curr_slot, id * sizeof(target_ulong));
+                memmove(curr_eip + 1, curr_eip, id * sizeof(unsigned long));
+            }
             return;
         }
     }
@@ -131,7 +137,8 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
         tcg_gen_st_tl(tcg_const_tl((int32_t)tb->tc_ptr), temp_shack_top, 0);
     else {
         tcg_gen_st_tl(tcg_const_tl(5566), temp_shack_top, 0);
-        *(--curr_shadow) = (shadow_pair){next_eip, gen_opparam_ptr - 4};
+        *--curr_eip = next_eip;
+        *--curr_slot = gen_opparam_ptr - 4;
     }
 
     tcg_gen_add_ptr(temp_shack_top, temp_shack_top, tcg_const_i64(sz));
