@@ -79,12 +79,12 @@ static inline TranslationBlock *tb_find(CPUState* env, target_ulong pc)
  */
 const int sz = sizeof(target_ulong);
 const int SIZE = 50;
-shadow_pair* shadow_hash_list;
-shadow_pair* curr_shadow;
+shadow_pair* shadow_hash_list, *curr_shadow, *shadow_end;
 
 static inline void shack_init(CPUState *env)
 {
-    shadow_hash_list = curr_shadow = (shadow_pair *)malloc(SIZE * sizeof(shadow_pair));
+    shadow_hash_list = (shadow_pair *)malloc(SIZE * sizeof(shadow_pair));
+    curr_shadow = shadow_end = shadow_hash_list + SIZE;
     env->shack = (uint64_t *)malloc(SHACK_SIZE * sizeof(uint64_t));
     env->shack_end = env->shack_top = env->shack;
 }
@@ -96,13 +96,13 @@ static inline void shack_init(CPUState *env)
  void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
 {
     shadow_pair *p = curr_shadow;
-    while (--p >= shadow_hash_list) {
+    while (++p < shadow_end) {
         if (p->guest_eip == guest_eip) {
             *p->shadow_slot = (uintptr_t)host_eip;
-            curr_shadow--;
-            const int off = (curr_shadow - p) * sizeof(shadow_pair);
+            curr_shadow++;
+            const int off = (p - curr_shadow) * sizeof(shadow_pair);
             if (off)
-                memmove(p, p + 1, off);
+                memmove(curr_shadow, curr_shadow + 1, off);
             return;
         }
     }
@@ -131,9 +131,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
         tcg_gen_st_tl(tcg_const_tl((int32_t)tb->tc_ptr), temp_shack_top, 0);
     else {
         tcg_gen_st_tl(tcg_const_tl(5566), temp_shack_top, 0);
-        curr_shadow->guest_eip = next_eip;
-        curr_shadow->shadow_slot = gen_opparam_ptr - 4;
-        ++curr_shadow;
+        *(--curr_shadow) = (shadow_pair){next_eip, gen_opparam_ptr - 4};
     }
 
     tcg_gen_add_ptr(temp_shack_top, temp_shack_top, tcg_const_i64(sz));
