@@ -35,19 +35,20 @@ typedef struct list_head list_t;
 
 #if TARGET_LONG_BITS == 32
 #define TCGv TCGv_i32
+#define GET_TCGV                GET_TCGV_I32
 #else
 #define TCGv TCGv_i64
+#define GET_TCGV                GET_TCGV_I64
 #endif
 
 #define MAX_CALL_SLOT   (16 * 1024)
 #define SHACK_SIZE      (16 * 1024)
 
-struct shadow_pair
+typedef struct shadow_pair
 {
-    struct list_head l;
     target_ulong guest_eip;
     unsigned long *shadow_slot;
-};
+} shadow_pair;
 
 void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip);
 inline void insert_unresolved_eip(CPUState *env, target_ulong next_eip, unsigned long *slot);
