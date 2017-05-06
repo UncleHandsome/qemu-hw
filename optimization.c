@@ -79,16 +79,12 @@ static inline TranslationBlock *tb_find(CPUState* env, target_ulong pc)
  */
 
 shadowht ht;
-const int HASH_SIZE = (1 << 8);
-const int HASH_MASK = (1 << 8) - 1;
-const int sz = sizeof(target_ulong);
 
 static inline void shack_init(CPUState *env)
 {
-    ht.ht = malloc(sizeof(shadow_pair*) * HASH_SIZE);
-    memset(ht.ht, 0, sizeof(shadow_pair*) * HASH_SIZE);
-    ht.size_mask = HASH_MASK;
-    ht.addr_slot = malloc(sizeof(unsigned long) * HASH_SIZE * 5);
+    ht.ht = malloc(sizeof(shadow_pair*) * TB_JMP_CACHE_SIZE);
+    memset(ht.ht, 0, sizeof(shadow_pair*) * TB_JMP_CACHE_SIZE);
+    ht.addr_slot = malloc(sizeof(unsigned long) * TB_JMP_CACHE_SIZE * 5);
     env->shack = (uint64_t *)malloc(SHACK_SIZE * sizeof(uint64_t));
     env->shack_end = env->shack_top = env->shack;
 }
@@ -99,7 +95,7 @@ static inline void shack_init(CPUState *env)
  */
  void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
 {
-    int idx = guest_eip & ht.size_mask;
+    int idx = tb_jmp_cache_hash_func(guest_eip);
     shadow_pair *p = ht.ht[idx], *prev = NULL;
     while (p) {
         if (p->guest_eip == guest_eip) {
@@ -132,7 +128,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
 {
     TCGv_ptr temp_shack_top = tcg_temp_new_ptr();
     tcg_gen_ld_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sz);
+    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sizeof(target_ulong));
 
     unsigned long *slot = ht.addr_slot++;
     tcg_gen_st_tl(tcg_const_tl((int32_t)slot), temp_shack_top, 0);
@@ -142,7 +138,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
         *slot = tb->tc_ptr;
     else {
         *slot = 5566;
-        int index = next_eip & ht.size_mask;
+        int index = tb_jmp_cache_hash_func(next_eip);
         shadow_pair *new = malloc(sizeof(shadow_pair));
         new->guest_eip = next_eip;
         new->shadow_slot = slot;
@@ -150,7 +146,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
         ht.ht[index] = new;
     }
 
-    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sz);
+    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sizeof(target_ulong));
     tcg_gen_st_tl(tcg_const_tl(next_eip), temp_shack_top, 0);
     tcg_gen_st_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
 }
@@ -181,7 +177,7 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     // if (host_eip == 5566) goto l;
     tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(5566), l);
     // temp = temp - 2;
-    tcg_gen_subi_tl(temp_shack_top, temp_shack_top, 2*sz);
+    tcg_gen_subi_tl(temp_shack_top, temp_shack_top, 2*sizeof(target_ulong));
     // cpu_env->shack_top = temp
     tcg_gen_st_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
 
