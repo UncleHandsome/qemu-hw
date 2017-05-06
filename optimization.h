@@ -24,12 +24,10 @@ typedef struct list_head list_t;
 #if TCG_TARGET_REG_BITS == 32
 #define tcg_gen_st_ptr          tcg_gen_st_i32
 #define tcg_gen_brcond_ptr      tcg_gen_brcond_i32
-#define tcg_temp_free_ptr       tcg_temp_free_i32
 #define tcg_temp_local_new_ptr  tcg_temp_local_new_i32
 #else
 #define tcg_gen_st_ptr          tcg_gen_st_i64
 #define tcg_gen_brcond_ptr      tcg_gen_brcond_i64
-#define tcg_temp_free_ptr       tcg_temp_free_i64
 #define tcg_temp_local_new_ptr  tcg_temp_local_new_i64
 #endif
 
@@ -46,9 +44,17 @@ typedef struct list_head list_t;
 
 typedef struct shadow_pair
 {
+    struct shadow_pair *next;
     target_ulong guest_eip;
     unsigned long *shadow_slot;
 } shadow_pair;
+
+typedef struct shadowht
+{
+    shadow_pair **ht;
+    unsigned long size_mask;
+    unsigned long *addr_slot;
+} shadowht;
 
 void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip);
 inline void insert_unresolved_eip(CPUState *env, target_ulong next_eip, unsigned long *slot);

@@ -77,17 +77,18 @@ static inline TranslationBlock *tb_find(CPUState* env, target_ulong pc)
 /*
  * Shadow Stack
  */
+
+shadowht ht;
+const int HASH_SIZE = (1 << 8);
+const int HASH_MASK = (1 << 8) - 1;
 const int sz = sizeof(target_ulong);
-const int SIZE = 50;
-target_ulong *eip_list, *eip_end, *curr_eip;
-unsigned long *slot_list, *slot_end, *curr_slot;
 
 static inline void shack_init(CPUState *env)
 {
-    eip_list = (target_ulong *)malloc(SIZE * sizeof(shadow_pair));
-    curr_eip = eip_end = eip_list + SIZE;
-    slot_list = (unsigned long*)curr_eip;
-    curr_slot = slot_end = slot_list + SIZE;
+    ht.ht = malloc(sizeof(shadow_pair*) * HASH_SIZE);
+    memset(ht.ht, 0, sizeof(shadow_pair*) * HASH_SIZE);
+    ht.size_mask = HASH_MASK;
+    ht.addr_slot = malloc(sizeof(unsigned long) * HASH_SIZE * 5);
     env->shack = (uint64_t *)malloc(SHACK_SIZE * sizeof(uint64_t));
     env->shack_end = env->shack_top = env->shack;
 }
@@ -98,19 +99,20 @@ static inline void shack_init(CPUState *env)
  */
  void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
 {
-    target_ulong *p = curr_eip;
-    while (++p < eip_end) {
-        if (*p == guest_eip) {
-            int id = p - curr_eip;
-            curr_slot[id] = (uintptr_t)host_eip;
-            ++curr_slot;
-            ++curr_eip;
-            if (id > 1) {
-                memmove(curr_slot + 1, curr_slot, id * sizeof(target_ulong));
-                memmove(curr_eip + 1, curr_eip, id * sizeof(unsigned long));
-            }
+    int idx = guest_eip & ht.size_mask;
+    shadow_pair *p = ht.ht[idx], *prev = NULL;
+    while (p) {
+        if (p->guest_eip == guest_eip) {
+            // if (prev)
+            //     prev->next = p->next;
+            // else
+            //     ht.ht[idx] = p->next;
+            *p->shadow_slot = (uintptr_t)host_eip;
+            // free(p);
             return;
         }
+        prev = p;
+        p = p->next;
     }
 }
 
@@ -130,20 +132,27 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
 {
     TCGv_ptr temp_shack_top = tcg_temp_new_ptr();
     tcg_gen_ld_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_add_ptr(temp_shack_top, temp_shack_top, tcg_const_i64(sz));
+    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sz);
+
+    unsigned long *slot = ht.addr_slot++;
+    tcg_gen_st_tl(tcg_const_tl((int32_t)slot), temp_shack_top, 0);
 
     TranslationBlock* tb = tb_find(env, next_eip);
     if (tb)
-        tcg_gen_st_tl(tcg_const_tl((int32_t)tb->tc_ptr), temp_shack_top, 0);
+        *slot = tb->tc_ptr;
     else {
-        tcg_gen_st_tl(tcg_const_tl(5566), temp_shack_top, 0);
-        *--curr_eip = next_eip;
-        *--curr_slot = gen_opparam_ptr - 4;
+        *slot = 5566;
+        int index = next_eip & ht.size_mask;
+        shadow_pair *new = malloc(sizeof(shadow_pair));
+        new->guest_eip = next_eip;
+        new->shadow_slot = slot;
+        new->next = ht.ht[index];
+        ht.ht[index] = new;
     }
 
-    tcg_gen_add_ptr(temp_shack_top, temp_shack_top, tcg_const_i64(sz));
+    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sz);
     tcg_gen_st_tl(tcg_const_tl(next_eip), temp_shack_top, 0);
-
+    tcg_gen_st_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
 }
 
 /*
@@ -154,21 +163,38 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
 {
     TCGv_ptr temp_shack_top = tcg_temp_local_new_ptr();
     TCGv guest_eip = tcg_temp_new();
-    tcg_gen_ld_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_ld_tl(guest_eip, temp_shack_top, 0);
     int l = gen_new_label();
+
+    // temp = cpu_env->shack_top
+    tcg_gen_ld_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
+    // guest_eip = *temp;
+    tcg_gen_ld_tl(guest_eip, temp_shack_top, 0);
+    // if (guest_eip != next_eip) goto l;
     tcg_gen_brcond_tl(TCG_COND_NE, next_eip, guest_eip, l);
 
-    TCGv host_eip = tcg_temp_new();
-    tcg_gen_add_ptr(temp_shack_top, temp_shack_top, tcg_const_i64(sz));
-    tcg_gen_ld_tl(host_eip, temp_shack_top, 0);
-    tcg_gen_add_ptr(temp_shack_top, temp_shack_top, tcg_const_i64(sz));
+    TCGv_ptr host_eip_ptr = tcg_temp_new_ptr();
+    TCGv host_eip = tcg_temp_local_new();
+    // host_eip_ptr = temp[-1];
+    tcg_gen_ld_tl(host_eip_ptr, temp_shack_top, -4);
+    // host_eip = *host_eip_ptr
+    tcg_gen_ld_tl(host_eip, host_eip_ptr, 0);
+    // if (host_eip == 5566) goto l;
+    tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(5566), l);
+    // temp = temp - 2;
+    tcg_gen_subi_tl(temp_shack_top, temp_shack_top, 2*sz);
+    // cpu_env->shack_top = temp
+    tcg_gen_st_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
 
     *gen_opc_ptr++ = INDEX_op_jmp;
     *gen_opparam_ptr++ = GET_TCGV(host_eip);
 
 
     gen_set_label(l);
+
+    tcg_temp_free_ptr(temp_shack_top);
+    tcg_temp_free(guest_eip);
+    tcg_temp_free(host_eip);
+    tcg_temp_free(host_eip_ptr);
 }
 
 /*
