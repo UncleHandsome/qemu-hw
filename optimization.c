@@ -86,7 +86,8 @@ static inline void shack_init(CPUState *env)
     memset(ht.ht, 0, sizeof(shadow_pair*) * TB_JMP_CACHE_SIZE);
     ht.addr_slot = malloc(sizeof(unsigned long) * TB_JMP_CACHE_SIZE * 5);
     env->shack = (uint64_t *)malloc(SHACK_SIZE * sizeof(uint64_t));
-    env->shack_end = env->shack_top = env->shack;
+    env->shack_top = env->shack;
+    env->shack_end = env->shack + SHACK_SIZE;
 }
 
 /*
@@ -126,8 +127,20 @@ void helper_shack_flush(CPUState *env)
  */
 void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
 {
-    TCGv_ptr temp_shack_top = tcg_temp_new_ptr();
+    TCGv_ptr temp_shack_top = tcg_temp_local_new_ptr();
+    TCGv_ptr temp_shack_end = tcg_temp_local_new_ptr();
+    int not_full = gen_new_label();
+    // temp_shack_top = cpu_env->shack_top
     tcg_gen_ld_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
+    // temp_shack_end = cpu_env->shack_end
+    tcg_gen_ld_ptr(temp_shack_end, cpu_env, offsetof(CPUState, shack_end));
+    // if (temp_shack_top != temp_shack_end) goto not full
+    tcg_gen_brcond_tl(TCG_COND_NE, temp_shack_top, temp_shack_end, not_full);
+
+    tcg_gen_mov_tl(temp_shack_top, tcg_const_tl((int32_t)env->shack));
+
+    gen_set_label(not_full);
+
     tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sizeof(target_ulong));
 
     unsigned long *slot = ht.addr_slot++;
@@ -137,7 +150,6 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     if (tb)
         *slot = tb->tc_ptr;
     else {
-        *slot = 5566;
         int index = tb_jmp_cache_hash_func(next_eip);
         shadow_pair *new = malloc(sizeof(shadow_pair));
         new->guest_eip = next_eip;
@@ -149,6 +161,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sizeof(target_ulong));
     tcg_gen_st_tl(tcg_const_tl(next_eip), temp_shack_top, 0);
     tcg_gen_st_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
+
 }
 
 /*
