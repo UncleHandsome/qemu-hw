@@ -134,22 +134,23 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     tcg_gen_ld_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
     // temp_shack_end = cpu_env->shack_end
     tcg_gen_ld_ptr(temp_shack_end, cpu_env, offsetof(CPUState, shack_end));
-    // if (temp_shack_top != temp_shack_end) goto not full
+    // if (temp_shack_top != temp_shack_end) goto not_full
     tcg_gen_brcond_tl(TCG_COND_NE, temp_shack_top, temp_shack_end, not_full);
 
+    // temp_shack_top = env->shack
     tcg_gen_mov_tl(temp_shack_top, tcg_const_tl((int32_t)env->shack));
 
     gen_set_label(not_full);
 
-    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sizeof(target_ulong));
-
     unsigned long *slot = ht.addr_slot++;
-    tcg_gen_st_tl(tcg_const_tl((int32_t)slot), temp_shack_top, 0);
+    // temp_shack_top[1] = slot
+    tcg_gen_st_tl(tcg_const_tl((int32_t)slot), temp_shack_top, sizeof(target_ulong));
 
     TranslationBlock* tb = tb_find(env, next_eip);
     if (tb)
         *slot = tb->tc_ptr;
     else {
+        *slot = 5566;
         int index = tb_jmp_cache_hash_func(next_eip);
         shadow_pair *new = malloc(sizeof(shadow_pair));
         new->guest_eip = next_eip;
@@ -158,8 +159,11 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
         ht.ht[index] = new;
     }
 
-    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, sizeof(target_ulong));
-    tcg_gen_st_tl(tcg_const_tl(next_eip), temp_shack_top, 0);
+    // temp_shack_top[2] = next_eip
+    tcg_gen_st_tl(tcg_const_tl(next_eip), temp_shack_top, 2 * sizeof(target_ulong));
+    // temp_shack_top + 8
+    tcg_gen_addi_ptr(temp_shack_top, temp_shack_top, 2 * sizeof(target_ulong));
+    // env->shack_top = temp_shack_top
     tcg_gen_st_ptr(temp_shack_top, cpu_env, offsetof(CPUState, shack_top));
 
 }
