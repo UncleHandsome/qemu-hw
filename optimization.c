@@ -228,10 +228,10 @@ void *helper_lookup_ibtc(target_ulong guest_eip)
 {
     struct jmp_pair *jp = &itable->htable[IBTC_KEY(guest_eip)];
     if (jp != NULL) {
-        last_guest_eip = guest_eip;
         return jp->tb->tc_ptr;
     }
 
+    last_guest_eip = guest_eip;
     return optimization_ret_addr;
 }
 
