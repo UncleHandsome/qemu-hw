@@ -222,16 +222,14 @@ __thread int update_ibtc;
  */
 
 #define IBTC_KEY(eip) ((uint16_t)(eip & IBTC_CACHE_MASK))
-static struct ibtc_table *itable;
-static target_ulong last_guest_eip;
+static struct ibtc_table itable;
 void *helper_lookup_ibtc(target_ulong guest_eip)
 {
-    struct jmp_pair *jp = &itable->htable[IBTC_KEY(guest_eip)];
-    if (jp != NULL) {
-        return jp->tb->tc_ptr;
-    }
+    struct jmp_pair jp = itable.htable[IBTC_KEY(guest_eip)];
+    if (jp.guest_eip == guest_eip)
+        return jp.tb->tc_ptr;
 
-    last_guest_eip = guest_eip;
+    update_ibtc = 1;
     return optimization_ret_addr;
 }
 
@@ -241,10 +239,10 @@ void *helper_lookup_ibtc(target_ulong guest_eip)
  */
 void update_ibtc_entry(TranslationBlock *tb)
 {
-    struct jmp_pair *jp = &itable->htable[IBTC_KEY(last_guest_eip)];
-    jp->guest_eip = last_guest_eip;
+    struct jmp_pair *jp = &itable.htable[IBTC_KEY(tb->pc)];
+    jp->guest_eip = tb->pc;
     jp->tb = tb;
-    last_guest_eip = NULL;
+    update_ibtc = 0;
 }
 
 /*
@@ -254,8 +252,6 @@ void update_ibtc_entry(TranslationBlock *tb)
 
 static inline void ibtc_init(CPUState *env)
 {
-    itable = malloc(sizeof(struct ibtc_table));
-    memset(itable, 0, sizeof(struct ibtc_table));
 }
 
 /*
